@@ -67,6 +67,21 @@ then
 fi
 cd $outdir
 
+check_for_and_remove_incomplete_files() {
+    file=$1
+    
+    if [ -e "${file}" ];
+    then
+        echo "File exists"
+        file_size=$(stat -c%s "${file}")
+        if [ "$file_size" -lt $((50 * 1024)) ];
+        then
+            echo "File is too small. File is being removed."
+            rm "${file}"
+        fi
+    fi
+}
+export -f check_for_and_remove_incomplete_files
 
 
 printf "##################################\n"
@@ -94,13 +109,32 @@ export ML_WGHTS="${tmpdir}/ML_weights.nc"
 cdo -P ${PROCS} -gencon,r180x91 -intlevel,10,100,1000,4000 -setctomiss,0 -selvar,to "${ML_FILES[0]}" "${ML_WGHTS}"
 
 
+
 printf "Select var, interpolate levels and remap\n"
 ml_processing() {
     file=$1
     filename=$(basename "${file}")
     echo "Operating on ${filename}"
-    cdo -P ${PROCS} -remap,r180x91,"${ML_WGHTS}" -intlevel,10,100,1000,4000 -setctomiss,0 -chname,to,thetao -selvar,to -selyear,"${first_year}"/"${last_year}" "${file}" "${tmpdir}/thetao.gr2.${filename}"
-    cdo -P ${PROCS} -remap,r180x91,"${ML_WGHTS}" -intlevel,10,100,1000,4000 -setctomiss,0 -selvar,so -selyear,"${first_year}"/"${last_year}" "${file}" "${tmpdir}/so.gr2.${filename}"
+
+    thetao_out="${tmpdir}/thetao.gr2.${filename}"
+    echo "File will be saved to ${thetao_out}"
+    check_for_and_remove_incomplete_files "${thetao_out}"
+    if [ ! -e "${thetao_out}" ];
+    then
+        echo "Writing file"
+        cdo -P ${PROCS} -remap,r180x91,"${ML_WGHTS}" -intlevel,10,100,1000,4000 -setctomiss,0 -chname,to,thetao -selvar,to -selyear,"${first_year}"/"${last_year}" "${file}" "${thetao_out}"
+    fi
+
+
+    so_out="${tmpdir}/so.gr2.${filename}"
+    echo "File will be saved to ${so_out}"
+    check_for_and_remove_incomplete_files "${so_out}"
+    if [ ! -e "${so_out}" ];
+    then
+        echo "Writing file"
+        cdo -P ${PROCS} -remap,r180x91,"${ML_WGHTS}" -intlevel,10,100,1000,4000 -setctomiss,0 -selvar,so -selyear,"${first_year}"/"${last_year}" "${file}" "${so_out}"
+    fi
+
 }
 export -f ml_processing
 parallel --jobs $BATCH_SIZE "ml_processing {}" ::: "${ML_FILES[@]}"
@@ -138,8 +172,21 @@ twod_processing() {
     file=$1
     filename=$(basename "${file}")
     echo "Operating on ${filename}"
-    cdo -P ${PROCS} -remap,r180x91,"${TWOD_WGHTS}" -chname,conc,siconc -selvar,conc -selyear,"${first_year}"/"${last_year}" "${file}" "${tmpdir}/siconc.gr2.${filename}"
-    cdo -P ${PROCS} -remap,r180x91,"${TWOD_WGHTS}" -setctomiss,0 -chname,mlotst10,mlotst -selvar,mlotst10 -selyear,"${first_year}"/"${last_year}" "${file}" "${tmpdir}/mlotst.gr2.${filename}"
+    siconc_out="${tmpdir}/siconc.gr2.${filename}"
+    mlotst_out="${tmpdir}/mlotst.gr2.${filename}"
+    check_for_and_remove_incomplete_files "${siconc_out}"
+    check_for_and_remove_incomplete_files "${mlotst_out}"
+
+    if [ ! -e "${siconc_out}" ];
+    then
+        cdo -P ${PROCS} -remap,r180x91,"${TWOD_WGHTS}" -chname,conc,siconc -selvar,conc -selyear,"${first_year}"/"${last_year}" "${file}" "${siconc_out}"
+    fi
+
+    if [ ! -e "${mlotst_out}" ];
+    then
+        cdo -P ${PROCS} -remap,r180x91,"${TWOD_WGHTS}" -setctomiss,0 -chname,mlotst10,mlotst -selvar,mlotst10 -selyear,"${first_year}"/"${last_year}" "${file}" "${mlotst_out}"
+    fi
+
 }
 export -f twod_processing
 parallel --jobs $BATCH_SIZE "twod_processing {}" ::: "${TWOD_FILES[@]}"
@@ -147,9 +194,17 @@ parallel --jobs $BATCH_SIZE "twod_processing {}" ::: "${TWOD_FILES[@]}"
 printf " Mergetime, splitseason, rename\n"
 for var in siconc mlotst;
 do
-    cdo -P ${PROCS} -splitseas -yseasmean -mergetime "${tmpdir}/${var}.gr2.*.nc" "${tmpdir}/${var}_${model_name}_${first_year}01-${last_year}12_surface_"
+    cdo -P ${PROCS} -splitseas -yseasmean -mergetime "${tmpdir}/${var}.gr2.*.nc" "${outdir}/${var}_${model_name}_${first_year}01-${last_year}12_surface_"
 done
 
+
+
+printf "##################################\n"
+printf "# Operate on Ocean Variance data     #\n"
+printf "##################################\n"
+printf "construct interpolation weights\n"
+export TWOD_WGHTS="${tmpdir}/TWOD_weights.nc"
+cdo -P ${PROCS} -gencon,r180x91 -setctomiss,0 -selvar,to "${TWOD_FILES[0]}" "${TWOD_WGHTS}"
 
 
 # # Need
